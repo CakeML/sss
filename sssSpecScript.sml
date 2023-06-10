@@ -29,7 +29,6 @@ End
 Datatype:
   sssWordSelector = <|
     prefix: char list;
-    letterOptions: char list;
     selectedLetter: num
   |>
 End
@@ -47,25 +46,33 @@ Definition nextLetters_def:
   IMAGE oHD (set (FILTER (λword. isPREFIX prefix word) words))
 End
 
-Definition makeLetterOptions_def:
-  makeLetterOptions letterSet =
+Definition letterOptionsFromSet_def:
+  letterOptionsFromSet letterSet =
     FILTER (λc. SOME c IN letterSet) "abcdefghijklmnopqrstuvwxyz"
-    ++ (if NONE IN letterSet then "!" else "")
+End
+
+Definition letterOptions_def:
+  letterOptions prefix = letterOptionsFromSet (nextLetters prefix WORD_LIST)
 End
 
 Definition emptyWordSelector_def:
-  emptyWordSelector = <|
-    prefix := [];
-    letterOptions := makeLetterOptions (nextLetters [] WORD_LIST);
-    selectedLetter := 0;
-  |>
+  emptyWordSelector = <| prefix := ""; selectedLetter := 0; |>
+End
+
+Definition displayWordSelector_def:
+  displayWordSelector ws =
+    SNOC (EL ws.selectedLetter (letterOptions ws.prefix)) ws.prefix
 End
 
 Datatype:
   sssMachineState =
-  | GenerateSeed (num option) (* number of words shown *)
-  | InputSeed (num list) (* words (by index) entered *)
-  | ConfirmSeed (num option) (* number of words confirmed *) sssWordSelector
+  | GenerateSeed (num option) (* index of word being shown *)
+  | InputSeed (num list option) (* words (by index) entered *)
+              sssWordSelector
+              (consent option)
+  | ConfirmSeed (num option) (* number of words confirmed *)
+                sssWordSelector
+                bool (* confirming this word *)
   | ConfirmPIN PIN (* digits entered *) (consent option)
   | InputPIN PIN (* digits entered *) (consent option)
   | PinRequired PIN (* digits entered *) (consent option)
@@ -112,12 +119,20 @@ Definition NewSeedMessage_def:
   NewSeedMessage = "Generate seed?"
 End
 
+Definition InputSeedMessage_Def:
+  InputSeedMessage = "Input seed?"
+End
+
 Definition ConfirmSeedMessage_def:
-  ConfirmSeedMessage = "Confirm seed"
+  ConfirmSeedMessage = "Confirm seed?"
 End
 
 Definition NewPinMessage_def:
   NewPinMessage = "Enter PIN"
+End
+
+Definition NumberedWord_def:
+  NumberedWord n ls = (toString n) ++ ": " ++ (EL n ls)
 End
 
 Definition initialSavedState_def:
@@ -139,81 +154,134 @@ Definition initialState_def:
   |>
 End
 
+Definition initialStateWithAnySeed_def:
+  initialStateWithSeed key ent seed =
+    initialState key ent with ss updated_by (λss. ss with seed := seed)
+End
+
 Inductive nextState:
   (* Generate a new seed from entropy *)
-  (s1 = initialState key ent /\
+  (s1 = initialStateWithSeed key ent anySeed /\
    LTAKE 4 ent = SOME bits /\
    LDROP 4 ent = SOME rest /\
    s2 = s1 with <|
-     dout := EL 0 (wordsFromSeed (concat_word_list bits));
+     dout := NumberedWord 0 (wordsFromSeed (concat_word_list bits));
      ms := GenerateSeed (SOME 0);
      ss := (s1.ss with <| seed := SOME (concat_word_list bits); trngEntropy := rest |>)
    |>
    ==>
    nextState s1 (BothButtonsPressed, "") s2) /\
 
-  (* Show words of a newly generated seed *)
+  (* Show option to go to input seed mode *)
+  (s1 = initialStateWithSeed key ent anySeed /\
+   s2 = s1 with <|
+     dout := InputSeedMessage;
+     ms := InputSeed NONE emptyWordSelector NONE
+   |>
+   ==>
+   nextState s1 (LeftButtonPressed, "") s2) /\
+
+  (* Show next word of a newly generated seed *)
   (s1.ms = GenerateSeed (SOME n) /\
    SUC n < NUM_SEED_WORDS /\ s1.ss.seed = SOME seed /\
    s2 = s1 with <|
-     dout := EL (SUC n) (wordsFromSeed seed);
+     dout := NumberedWord (SUC n) (wordsFromSeed seed);
      ms := GenerateSeed (SOME (SUC n))
    |>
    ==>
-   nextState s1 (BothButtonsPressed, "") s2) /\
+   nextState s1 (RightButtonPressed, "") s2) /\
+
+  (* Show previous word of a newly generated seed *)
+  (s1.ms = GenerateSeed (SOME n) /\
+   0 < n /\ s1.ss.seed = SOME seed /\
+   s2 = s1 with <|
+     dout := NumberedWord (PRE n) (wordsFromSeed seed);
+     ms := GenerateSeed (SOME (PRE n))
+   |>
+   ==>
+   nextState s1 (LeftButtonPressed, "") s2) /\
+
+  (* Go back to regenerate *)
+  (s1.ms = GenerateSeed (SOME 0) /\ s1.ss.seed = SOME seed /\
+   s2 = s1 with <|
+     dout := NewSeedMessage;
+     ms := GenerateSeed NONE
+   |>
+   ==>
+   nextState s1 (LeftButtonPressed, "") s2) /\
+
+  (* Go forward instead *)
+  (s1.ms = GenerateSeed NONE /\ s1.ss.seed = SOME seed /\
+   s2 = s1 with <|
+     dout := NumberedWord 0 (wordsFromSeed seed);
+     ms := GenerateSeed (SOME 0)
+   |>
+   ==>
+   nextState s1 (RightButtonPressed, "") s2) /\
 
   (* Show the last word of a newly generated seed and move to confirming it *)
   (s1.ms = GenerateSeed (SOME n) /\
    SUC n = NUM_SEED_WORDS /\
    s2 = s1 with <|
      dout := ConfirmSeedMessage;
-     ms := ConfirmSeed NONE emptyWordSelector
+     ms := ConfirmSeed NONE emptyWordSelector F
    |>
    ==>
    nextState s1 (BothButtonsPressed, "") s2) /\
 
   (* Confirm words: start *)
-  (s1.ms = ConfirmSeed NONE ws /\
+  (s1.ms = ConfirmSeed NONE ws cf /\
    s2 = s1 with <|
-     dout := SNOC (EL 0 ws.letterOptions) ws.prefix ;
-     ms := ConfirmSeed (SOME 0) ws
+     dout := displayWordSelector ws ;
+     ms := ConfirmSeed (SOME 0) ws cf
    |>
    ==>
    nextState s1 (BothButtonsPressed, "") s2) /\
 
   (* Confirm words: move to next letter *)
-  (s1.ms = ConfirmSeed (SOME n) ws /\
-   SUC ws.selectedLetter < LENGTH ws.letterOptions /\
+  (s1.ms = ConfirmSeed (SOME n) ws F /\
+   SUC ws.selectedLetter < LENGTH (letterOptions ws.prefix) /\
+   ws' = ws with <| selectedLetter := SUC ws.selectedLetter |> /\
    s2 = s1 with <|
-     dout := SNOC (EL (SUC ws.selectedLetter) ws.letterOptions) ws.prefix ;
-     ms := ConfirmSeed (SOME n) (ws with <| selectedLetter := SUC ws.selectedLetter |>)
+     dout := displayWordSelector ws' ;
+     ms := ConfirmSeed (SOME n) ws' F
    |>
    ==>
    nextState s1 (RightButtonPressed, "") s2) /\
 
   (* Confirm words: move to previous letter *)
-  (s1.ms = ConfirmSeed (SOME n) ws /\
+  (s1.ms = ConfirmSeed (SOME n) ws F /\
    0 < ws.selectedLetter /\
+   ws' = ws with <| selectedLetter := PRE ws.selectedLetter |> /\
    s2 = s1 with <|
-     dout := SNOC (EL (PRE ws.selectedLetter) ws.letterOptions) ws.prefix ;
-     ms := ConfirmSeed (SOME n) (ws with <| selectedLetter := PRE ws.selectedLetter |>)
+     dout := displayWordSelector ws' ;
+     ms := ConfirmSeed (SOME n) ws' F
    |>
    ==>
    nextState s1 (LeftButtonPressed, "") s2) /\
 
-  (* Confirm words: move to next word successfully *)
-  (s1.ms = ConfirmSeed (SOME n) ws /\ SUC n < NUM_SEED_WORDS /\
+  (* Confirm words: move to confirm this word *)
+  (s1.ms = ConfirmSeed (SOME n) ws F /\ SUC n < NUM_SEED_WORDS /\
    s1.ss.seed = SOME seed /\
    EL n (wordsFromSeed seed) = ws.prefix /\
-   EL ws.selectedLetter ws.letterOptions = #"!" /\
+   SUC ws.selectedLetter = LENGTH (letterOptions ws.prefix) /\
    s2 = s1 with <|
-     dout := [EL 0 emptyWordSelector.letterOptions];
-     ms := ConfirmSeed (SOME (SUC n)) emptyWordSelector
+     dout := NumberedWord n (wordsFromSeed seed) ;
+     ms := ConfirmSeed (SOME n) ws T
+   |>
+   ==>
+   nextState s1 (RightButtonPressed, "") s2) /\
+
+  (* Confirm words: confirm and move to next word *)
+  (s1.ms = ConfirmSeed (SOME n) ws T /\ SUC n < NUM_SEED_WORDS /\
+   s1.ss.seed = SOME seed /\
+   EL n (wordsFromSeed seed) = ws.prefix /\
+   s2 = s1 with <|
+     dout := displayWordSelector emptyWordSelector ;
+     ms := ConfirmSeed (SOME (SUC n)) emptyWordSelector F
    |>
    ==>
    nextState s1 (BothButtonsPressed, "") s2)
-
-  (* Confirm words: fail due to wrong word *)
 
   (* Confirm words: confirm final word *)
 End
