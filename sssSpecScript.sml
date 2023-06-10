@@ -1,5 +1,6 @@
 open HolKernel boolLib bossLib Parse
-open pred_setTheory optionTheory stringTheory listTheory llistTheory wordsTheory
+open pred_setTheory optionTheory stringTheory listTheory llistTheory
+bitstringTheory wordsTheory
 
 val _ = new_theory "sssSpec";
 
@@ -368,8 +369,26 @@ Definition BothButtonsPressed_def:
   BothButtonsPressed: sssButtonInput = (T, T)
 End
 
+(* TODO: move *)
+Definition SHA256_def:
+  SHA256 (bits: bitstring) = (* TODO *) (42w: 256 word)
+End
+
+Definition CHUNKS_def:
+  CHUNKS 0 ls = [] /\
+  CHUNKS n ls =
+    if LENGTH ls <= n then [ls]
+    else TAKE n ls :: (CHUNKS n (DROP n ls))
+Termination
+  WF_REL_TAC`measure (LENGTH o SND)` \\ simp[]
+End
+(* -- *)
+
 Definition indicesFromSeed_def:
-  indicesFromSeed (seed: seedBits) = ARB: num list (* TODO *)
+  indicesFromSeed (seed: seedBits) =
+  let checksum = TAKE (256 DIV 8) (w2v (SHA256 (w2v seed))) in
+  let chunks = CHUNKS 11 (w2v seed ++ checksum) in
+  MAP v2n chunks
 End
 
 Definition wordsFromSeed_def:
